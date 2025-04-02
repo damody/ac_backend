@@ -8,7 +8,6 @@ use crate::{ChannelMessage, WebsocketChannel}; // Import the ChannelMessage enum
 pub struct GameState {
     pub world: World,
     pub turn_manager: TurnManager,
-    pub websocket_player_channels: HashMap<String, WebsocketChannel>,
     pub mode: Mode,
     pub mode_timer: f32,
 }
@@ -30,14 +29,16 @@ impl GameState {
         world.register::<StatusEffects>();
         world.register::<TurnState>();
         world.register::<Player>();
-
+    
+        // 註冊 websocket_player_channels 作為全域變數
+        world.insert(websocket_player_channels);
+    
         // 創建回合管理器（設置各階段時間）
         let turn_manager = TurnManager::new(30.0, 60.0, 5.0);
         
         GameState {
             world,
             turn_manager,
-            websocket_player_channels,
             mode: Mode::Selection,
             mode_timer: 10.0, // 10 seconds for selection mode
         }
@@ -204,6 +205,7 @@ impl GameState {
     pub fn update(&mut self, delta_time: f32) {
         // Update mode timer
         self.mode_timer -= delta_time;
+    
     
         match self.mode {
             Mode::Selection => {

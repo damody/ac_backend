@@ -3,6 +3,7 @@ mod game_state;
 mod combat;
 mod turn;
 mod skills;
+mod players_system;
 
 use specs::{Component, VecStorage, World, WorldExt, Builder, System, ReadStorage, WriteStorage, Join};
 use specs::prelude::*;
@@ -179,6 +180,7 @@ async fn main() {
         let addr = "127.0.0.1:8080";
         let listener = tokio::net::TcpListener::bind(addr).await.expect("無法綁定 WebSocket 伺服器");
         println!("WebSocket 伺服器正在監聽 {}", addr);
+
         while let Ok((stream, _)) = listener.accept().await {
             let specs_player_channels = specs_player_channels.clone(); // Use Arc to share across threads
             tokio::spawn(async move {
@@ -235,6 +237,7 @@ async fn main() {
     let mut dispatcher = DispatcherBuilder::new()
         .with(combat::CombatSystem, "combat_system", &[])
         .with(turn::TurnSystem, "turn_system", &["combat_system"])
+        .with(players_system::PlayersSystem, "players_system", &["turn_system"])
         .build();
 
     // 初始化分發器
