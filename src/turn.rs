@@ -1,5 +1,6 @@
 use specs::{Component, System, VecStorage, WriteStorage, ReadStorage, Join, Entity};
 use serde::{Serialize, Deserialize};
+use crate::ChannelMessage;
 
 // 回合狀態組件
 #[derive(Component, Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ pub enum TurnPhase {
 #[storage(VecStorage)]
 pub struct Player {
     pub id: usize,
+    pub name_id: String, // 名稱ID
     pub health: i32,
     pub gold: i32,
     pub level: u32,

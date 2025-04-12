@@ -1,15 +1,25 @@
 use specs::{World, WorldExt, Builder, Join};
 use uuid::Uuid;
+use std::collections::HashMap; // Import HashMap
 use crate::{Position, Chess, ChessType, CombatStats, StatusEffects, Skill, SkillType};
 use crate::turn::{TurnState, TurnPhase, Player, TurnManager};
+use crate::{ChannelMessage, WebsocketChannel}; // Import the ChannelMessage enum and SpecsChannel
 
 pub struct GameState {
     pub world: World,
     pub turn_manager: TurnManager,
+    pub mode: Mode,
+    pub mode_timer: f32,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Mode {
+    Selection,
+    Combat,
 }
 
 impl GameState {
-    pub fn new() -> Self {
+    pub fn new(websocket_player_channels: HashMap<String, WebsocketChannel>) -> Self {
         let mut world = World::new();
         
         // 註冊所有組件
@@ -19,11 +29,19 @@ impl GameState {
         world.register::<StatusEffects>();
         world.register::<TurnState>();
         world.register::<Player>();
-
+    
+        // 註冊 websocket_player_channels 作為全域變數
+        world.insert(websocket_player_channels);
+    
         // 創建回合管理器（設置各階段時間）
         let turn_manager = TurnManager::new(30.0, 60.0, 5.0);
         
-        GameState { world, turn_manager }
+        GameState {
+            world,
+            turn_manager,
+            mode: Mode::Selection,
+            mode_timer: 10.0, // 10 seconds for selection mode
+        }
     }
 
     pub fn initialize_game(&mut self, num_players: usize) {
@@ -38,18 +56,36 @@ impl GameState {
             })
             .build();
 
-        // 創建所有玩家
+        use rand::seq::SliceRandom;
+        use rand::thread_rng;
+
+        // 創建所有玩家並分配隨機棋子
+        let chess_types = vec![
+            ChessType::Warrior,
+            ChessType::Mage,
+            ChessType::Archer,
+            ChessType::Tank,
+        ];
         for i in 0..num_players {
             self.world
                 .create_entity()
-                .with(Player {
-                    id: i,
-                    health: 100,
-                    gold: 0,
-                    level: 1,
-                    experience: 0,
+                .with({
+                    let (tx, rx) = tokio::sync::mpsc::channel::<ChannelMessage>(32);
+                    Player {
+                        id: i,
+                        name_id: format!("player_{}", i), // 為每個玩家生成唯一的名稱ID
+                        health: 100,
+                        gold: 0,
+                        level: 1,
+                        experience: 0,
+                    }
                 })
                 .build();
+
+            // 隨機選擇一個棋子類型並生成棋子
+            if let Some(random_chess_type) = chess_types.choose(&mut thread_rng()).cloned() {
+                self.spawn_chess(random_chess_type, i as i32, 0); // 假設棋子初始位置為 (i, 0)
+            }
         }
     }
 
@@ -57,6 +93,7 @@ impl GameState {
         let (combat_stats) = match chess_type {
             ChessType::Warrior => (
                 CombatStats {
+                    name: "Warrior".to_string(),
                     hp: 100,
                     max_hp: 100,
                     attack: 15,
@@ -78,6 +115,7 @@ impl GameState {
             ),
             ChessType::Mage => (
                 CombatStats {
+                    name: "Mage".to_string(),
                     hp: 70,
                     max_hp: 70,
                     attack: 8,
@@ -99,6 +137,7 @@ impl GameState {
             ),
             ChessType::Archer => (
                 CombatStats {
+                    name: "Archer".to_string(),
                     hp: 80,
                     max_hp: 80,
                     attack: 20,
@@ -120,6 +159,7 @@ impl GameState {
             ),
             ChessType::Tank => (
                 CombatStats {
+                    name: "Tank".to_string(),
                     hp: 150,
                     max_hp: 150,
                     attack: 10,
@@ -141,6 +181,7 @@ impl GameState {
             ),
         };
 
+        println!("Chess entity created with base stats: {:?}", combat_stats);
         self.world
             .create_entity()
             .with(Chess {
@@ -162,28 +203,50 @@ impl GameState {
     }
 
     pub fn update(&mut self, delta_time: f32) {
-        // 獲取當前回合狀態
-        let mut turn_states = self.world.write_storage::<TurnState>();
-        if let Some(turn_state) = (&mut turn_states).join().next() {
-            // 更新回合管理器，檢查是否需要進入下一階段
-            if self.turn_manager.update(delta_time, turn_state) {
-                // 當前階段結束，進入下一階段
-                match turn_state.current_phase {
-                    TurnPhase::Preparation => {
-                        turn_state.current_phase = TurnPhase::Combat;
-                    }
-                    TurnPhase::Combat => {
-                        turn_state.current_phase = TurnPhase::Resolution;
-                    }
-                    TurnPhase::Resolution => {
-                        turn_state.current_phase = TurnPhase::Preparation;
-                        turn_state.current_player = (turn_state.current_player + 1) % turn_state.total_players;
-                        if turn_state.current_player == 0 {
-                            turn_state.turn_number += 1;
+        // Update mode timer
+        self.mode_timer -= delta_time;
+    
+    
+        match self.mode {
+            Mode::Selection => {
+                if self.mode_timer <= 0.0 {
+                    self.mode = Mode::Combat;
+                    self.mode_timer = 0.0; // Reset timer
+                    println!("Transitioning to Combat mode...");
+                    // Start pairing players for combat
+                    self.pair_players_for_combat();
+                }
+            }
+            Mode::Combat => {
+                // 獲取當前回合狀態
+                let mut turn_states = self.world.write_storage::<TurnState>();
+                if let Some(turn_state) = (&mut turn_states).join().next() {
+                    // 更新回合管理器，檢查是否需要進入下一階段
+                    if self.turn_manager.update(delta_time, turn_state) {
+                        // 當前階段結束，進入下一階段
+                        match turn_state.current_phase {
+                            TurnPhase::Preparation => {
+                                turn_state.current_phase = TurnPhase::Combat;
+                            }
+                            TurnPhase::Combat => {
+                                turn_state.current_phase = TurnPhase::Resolution;
+                            }
+                            TurnPhase::Resolution => {
+                                turn_state.current_phase = TurnPhase::Preparation;
+                                turn_state.current_player = (turn_state.current_player + 1) % turn_state.total_players;
+                                if turn_state.current_player == 0 {
+                                    turn_state.turn_number += 1;
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    }
+    
+    fn pair_players_for_combat(&self) {
+        println!("Pairing players for combat...");
+        // Implement pairing logic here
     }
 } 
